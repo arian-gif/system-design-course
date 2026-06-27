@@ -18,6 +18,7 @@
 9. [Query Parameters: Filtering, Sorting, Pagination](#9-query-parameters-filtering-sorting-pagination)
 10. [Designing GraphQL APIs](#10-designing-graphql-apis)
 11. [Authentication & Authorization](#11-authentication--authorization)
+12. [API Security: 7 Techniques](#12-api-security-7-techniques)
 
 ---
 
@@ -512,3 +513,172 @@ Client keeps calling the API with the new access token
 ```
 
 > **Why two tokens?** Short-lived access tokens keep the blast radius small (a leaked one dies quickly), while the long-lived refresh token saves the user from logging in every few minutes. You get **security + good UX** at once.
+
+### OAuth (Authorization Framework)
+
+**OAuth is an authorization framework** (not an authentication method). It lets a user **grant a third-party app limited permission to access their data** on another service — **without sharing their password**.
+
+Classic example: an app asking to **connect to your Google Drive**. You allow it, and it can access your files — but it never sees your Google password.
+
+**The flow (Authorization Code flow):**
+1. The app **asks the user for permission** to access certain data.
+2. The user is sent to the provider (e.g. Google Drive) and **grants access** there.
+3. The provider returns an **authorization code** to the app.
+4. The app **exchanges that code for an access token**.
+5. The app uses the **access token** to access the user's files **via the provider's API**.
+
+```
+User ──"allow this app?"──▶ Provider (e.g. Google)
+User grants access ─────────▶ Provider returns AUTH CODE to app
+App ──auth code──▶ Provider ──exchanges for──▶ ACCESS TOKEN
+App ──access token──▶ Provider API ──▶ reads the user's files
+```
+
+> **Why the extra "code → token" step?** The short-lived authorization code passes through the browser/redirect (less safe), but the valuable **access token** is fetched in a direct, back-channel server-to-server call — so the token is never exposed in the URL/browser. This is also where the **AuthN vs AuthZ** distinction is clearest: OAuth governs **what the app is allowed to do** (authorization), not who you are.
+
+### SSO (Single Sign-On)
+
+**SSO is a user-experience pattern** — *not* itself an authentication or authorization method. It lets a user **log in once** and then access **many apps** without logging in again.
+
+How it works:
+- There's an **Identity Provider (IdP)** — e.g. **Google** or **Okta** — that handles the login.
+- The user **logs in once** with the IdP → an **SSO cookie** is issued.
+- That cookie **validates the session** and is stored as a **global session**, so other apps trust it and don't re-prompt for login.
+
+```
+User logs in once ──▶ Identity Provider (Google / Okta) ──▶ issues SSO cookie (global session)
+        │
+App A ✓   App B ✓   App C ✓   ← all trust the same session, no re-login
+```
+
+> **Where it fits:** SSO *uses* authentication (the IdP verifies you) and often rides on protocols like OAuth/OIDC or SAML under the hood — but SSO itself is about the **convenience of one login across many apps**, which is why it's classed as UX, not an auth method.
+
+#### Identity protocols underneath SSO (e.g. SAML)
+
+SSO sits on top of **identity protocols** that do the actual identity exchange. **SAML** (Security Assertion Markup Language) is a common one:
+
+1. The user is **redirected to the IdP to log in**.
+2. The IdP sends back a **SAML assertion** — a signed statement vouching for the user.
+3. The app reads the assertion → the user's **identity is confirmed**, and they're let in.
+
+```
+App ──redirect──▶ IdP login ──▶ user authenticates
+IdP ──SAML assertion (signed)──▶ App ──▶ identity confirmed ✓
+```
+
+> A **SAML assertion** is essentially the IdP's signed "I vouch for this user" message. SAML is common in **enterprise** SSO; **OIDC** (OpenID Connect, built on OAuth) is the more modern equivalent for consumer/web apps.
+
+### Recap: AuthN vs AuthZ
+
+- **Authentication (AuthN)** = **who the user is** (proving identity).
+- **Authorization (AuthZ)** = **what the user is allowed to access** (permissions).
+
+Authentication always comes **first** (identify), then authorization (decide what they can do).
+
+| Concept | Question | Examples from this unit |
+|---|---|---|
+| **Authentication** | *Who are you?* | Basic/Digest, API keys, sessions, **JWT**, SSO/SAML (identity) |
+| **Authorization** | *What can you do?* | **OAuth** (granting an app limited access) |
+
+### Authorization Models (RBAC / ABAC / ACL)
+
+After authentication, an **authorization check** decides which resources the user is **allowed or denied**. Three common models:
+
+**1. RBAC — Role-Based Access Control**
+- Assign **roles** to users (e.g. `admin`, `write`, `read`), and **each role carries a set of permissions**.
+- The user's access = whatever their role allows.
+- ✅ Simple and easy to manage at scale (manage roles, not individuals).
+
+```
+Alice → role: admin  → (read, write, delete)
+Bob   → role: editor → (read, write)
+Carol → role: viewer → (read)
+```
+
+**2. ABAC — Attribute-Based Access Control**
+- Grants access based on **attributes** of the user + **environment conditions** rather than a fixed role.
+- e.g. `if user.department == "HR" → allow access to the salary tool`.
+- Can **combine attributes and context** (e.g. department **and** time-of-day).
+- ✅ Very flexible / fine-grained policy management, ❌ more **complex**.
+
+**3. ACL — Access Control List**
+- A **per-resource list** of exactly who can do what to *that* resource.
+- e.g. for `file.json`: **Alice = read**, **Bob = write**, **Carol = no access**.
+- ✅ Very precise, ❌ **hard to scale** (a separate list to maintain on every resource).
+
+| Model | Access decided by | Best for | Weakness |
+|---|---|---|---|
+| **RBAC** | the user's **role** | most apps; clean at scale | less granular |
+| **ABAC** | **attributes + context** (dept, time, etc.) | fine-grained/dynamic policies | complex to manage |
+| **ACL** | **per-resource** allow/deny list | precise control on specific items | doesn't scale |
+
+> **Mental model:** **RBAC** = "what *role* are you?" · **ABAC** = "what *attributes/conditions* apply right now?" · **ACL** = "what does *this specific resource* say about you?"
+
+### OAuth2 as Delegated Authorization
+
+OAuth2 is **delegated authorization** — you let one service act on your behalf on another service, **with limited, scoped access**, instead of handing over your credentials.
+
+**Example:** giving **Vercel/Netlify** access to your **GitHub** repo so it can deploy your app.
+
+- ❌ You should **not** give Vercel your GitHub **username and password** — you don't know what they could do with full account access (and they could do *anything*).
+- ✅ Instead, **GitHub issues a token** scoped to **only the access you approved** — e.g. can it **read / write / update** which repos. Vercel uses that token, and nothing more.
+
+```
+You ──"let Vercel access my repo"──▶ GitHub
+GitHub ──issues scoped token (read/write specific repos)──▶ Vercel
+Vercel ──uses token (only that access)──▶ GitHub API ──▶ deploys
+```
+
+> This is the same OAuth flow from earlier, viewed through the **"delegation"** lens: the power of OAuth2 is **scoped, revocable access without sharing your password.** GitHub can also **revoke that token** anytime without you changing your password. "Scopes" (read/write/etc.) are exactly the *authorization* part — *what* the delegated app may do.
+
+### Token-Based Authorization
+
+Once a user is **authorized**, the service issues a **JWT token** that carries:
+- the user's **info / permissions** (claims — e.g. roles, scopes), and
+- an **expiration** that says **how long the token is valid for**.
+
+On each request, the service reads the token to know **what the user is allowed to do** and checks it **hasn't expired**.
+
+> Note the two uses of JWT in this unit: for **authentication** (the token proves *who* you are) and for **authorization** (the token's claims/scopes say *what* you can do). The **expiration** caps how long that access lasts — same statelessness/revocability trade-off from earlier (a JWT stays valid until it expires unless you add a blocklist).
+
+---
+
+## 12. API Security: 7 Techniques
+
+Seven techniques to protect your system:
+
+**1. Rate Limiting**
+Cap **how many requests a user can make** in a time window. Attackers can flood your API with calls to **overwhelm the system** (DoS). Apply it **per endpoint**, **per IP address**, or **overall**, and **temporarily block** all requests from a client that exceeds the limit. (See §3.)
+
+**2. CORS (Cross-Origin Resource Sharing)**
+Controls **which domains (origins) are allowed to call your API** from a browser. It's the browser rule that says "only `myapp.com` may call this API," blocking random other websites from using it on a user's behalf.
+
+**3. SQL / NoSQL Injection**
+An attacker sends **malicious input that gets executed as a database query** — letting them read, modify, or **delete** your database.
+- **Defense:** never build queries by gluing user input into a query string. Use **parameterized queries** and/or an **ORM**.
+
+> **What's an ORM?** *Object-Relational Mapper* (e.g. Prisma, Sequelize, SQLAlchemy, Hibernate). It lets you work with the database using **normal code/objects** instead of writing raw SQL strings — e.g. `User.find({ email })` instead of `"SELECT * FROM users WHERE email = '" + input + "'"`. Because the ORM sends user input as **separate parameters** (not pasted into the query text), the database treats it as **data, never as code** — which is exactly what stops injection.
+
+**4. Firewalls (WAF)**
+A firewall **filters incoming traffic**, separating **malicious from legitimate** requests and blocking the bad ones. "Strange" traffic = malformed/abnormal **HTTP requests** or suspicious **SQL queries**. (A *Web Application Firewall* specializes in this for web APIs.)
+
+**5. Network Restrictions (VPN / private access)**
+Some APIs should only be reachable from a **private network / VPN** — only someone **on that network** can call them. Keeps internal/admin APIs off the public internet entirely.
+
+**6. CSRF (Cross-Site Request Forgery)**
+A malicious site tricks the user's browser into making an unwanted request to a site they're **already logged into**, riding on their **session cookie**. Example: you're logged into your bank, visit a bad site, and it silently fires a "transfer money" request using your bank cookie.
+- **Defense:** CSRF tokens, `SameSite` cookies — so a request must prove it came from *your* app, not a forged one.
+
+**7. XSS (Cross-Site Scripting)**
+An attacker injects **malicious script** that runs in **other users'** browsers through your app. (Your corrected version is right →) **Stored XSS:** the attacker posts a malicious comment, it gets **saved to your database**, and then it runs in the browser of **everyone who views it** — potentially stealing their cookies/tokens or acting as them.
+- **Defense:** **sanitize/escape** all user-generated content before storing/displaying it (treat it as text, never executable code), use a **Content Security Policy (CSP)**, and store tokens in **`HttpOnly` cookies** so injected scripts can't read them.
+
+| # | Technique | Protects against |
+|---|---|---|
+| 1 | Rate limiting | flooding / DoS / abuse |
+| 2 | CORS | unauthorized cross-origin browser calls |
+| 3 | Injection defense (ORM/params) | DB read/delete via malicious input |
+| 4 | Firewall / WAF | malformed/malicious traffic |
+| 5 | VPN / network restriction | public access to internal APIs |
+| 6 | CSRF protection | forged requests using your cookie |
+| 7 | XSS protection | malicious scripts running on other users |
